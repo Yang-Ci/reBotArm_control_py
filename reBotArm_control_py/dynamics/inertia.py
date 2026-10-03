@@ -100,6 +100,9 @@ def compute_coriolis_matrix(
     _check_q_shape(model, q, "compute_coriolis_matrix")
     _check_v_shape(model, v, "compute_coriolis_matrix")
 
+    # Native algorithms only write entries belonging to ancestor/subtree pairs.
+    # Clear cross-branch entries when Data has been reused or modified by callers.
+    data.C.fill(0.0)
     pin.computeCoriolisMatrix(model, data, q, v)
     return data.C.copy()
 
@@ -202,8 +205,8 @@ def compute_all_terms(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """一次性计算质量矩阵、科氏力矩阵和重力向量。
 
-    这是同时获取 (M, C, g) 的最有效方式，会复用大量中间结果，
-    比连续调用三个独立函数快 3-5 倍。
+    ``computeAllTerms`` 更新 M、nle、g 等，但不更新 C。
+    本封装额外调用 ``computeCoriolisMatrix``，确保复用 Data 时 C 也对应当前状态。
 
     参数:
         model: 动力学模型。若为 None，则自动加载。
@@ -246,6 +249,8 @@ def compute_all_terms(
     _check_v_shape(model, v, "compute_all_terms")
 
     pin.computeAllTerms(model, data, q, v)
+    data.C.fill(0.0)
+    pin.computeCoriolisMatrix(model, data, q, v)
     return data.M.copy(), data.C.copy(), data.g.copy()
 
 

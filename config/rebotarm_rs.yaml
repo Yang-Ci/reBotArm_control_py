@@ -26,7 +26,35 @@ end_effector_frame: "gripper_end"
 arm_control_mode: "mit"
 
 channel: can0
-rate: 500
+rate: 250  # Leave headroom for motor replies and rate-limited parameter reads.
+
+# Continuous Cartesian motion (rad, rad/s, rad/s^2, N*m, seconds).
+motion_control:
+  path_samples: 201
+  max_path_joint_step: 0.05
+  max_velocity: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+  max_acceleration: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  allow_retime: true
+  path_position_tolerance: 0.00002
+  path_rotation_tolerance: 0.00002
+  max_start_drift: 0.01
+  max_tracking_error: 0.15
+  feedback_rate: 25
+  feedback_timeout_ms: 20
+  max_feedback_age: 0.25
+  max_control_dt: 0.05
+  gravity_scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  feedforward_limit: [18.0, 18.0, 18.0, 8.0, 8.0, 8.0]
+  feedforward_filter_time: 0.02
+  log_rate: 50
+  friction:
+    enabled: false  # Enable only after identifying this arm's friction.
+    coulomb: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    static: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    viscous: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    velocity_scale: 0.002
+    stribeck_velocity: 0.02
+    limit: [0.5, 0.8, 0.8, 0.4, 0.4, 0.4]
 
 groups:
   arm:

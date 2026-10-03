@@ -18,7 +18,7 @@ import numpy as np
 import pinocchio as pin
 
 from .robot_model import load_dynamics_model, create_data
-from .inertia import _check_q_shape, _check_v_shape
+from .inertia import _check_q_shape, _check_v_shape, compute_mass_matrix
 from ..kinematics.robot_model import pad_q_for_model
 
 
@@ -32,7 +32,8 @@ def compute_forward_dynamics(
     """计算正动力学：给定力矩求关节加速度。
 
     使用 ABA（Articulated Body Algorithm），直接输出 \\(\\ddot{q}\\)。
-    无需显式求逆质量矩阵，数值稳定。
+    无需显式求逆质量矩阵。封装先检查质量矩阵正定，避免无惯量自由度导致 NaN；
+    该检查增加一次 CRBA 和 Cholesky 分解，不适合当作纯 O(n) 实时接口。
 
     参数:
         model: 动力学模型。若为 None，则自动加载。
@@ -61,7 +62,10 @@ def compute_forward_dynamics(
     _check_v_shape(model, v, "compute_forward_dynamics")
     _check_tau_shape(model, tau, "compute_forward_dynamics")
 
+    _require_positive_mass(compute_mass_matrix(model, q, data))
     pin.aba(model, data, q, v, tau)
+    if not np.all(np.isfinite(data.ddq)):
+        raise ValueError("Forward dynamics produced non-finite acceleration; check model inertias")
     return data.ddq.copy()
 
 
@@ -97,7 +101,8 @@ def forward_dynamics_from_nle(
 
             from reBotArm_control_py.dynamics import compute_all_terms
 
-            M, _, nle = compute_all_terms(q, v)
+            M, C, g = compute_all_terms(q=q, v=v)
+            nle = C @ v + g
 
             # 阻抗控制：desired_acc = M^{-1}(τ_des - nle)
             tau_des = np.array([0.0, 0.0, -5.0, 0.0, 0.0, 0.0])
@@ -123,7 +128,20 @@ def forward_dynamics_from_nle(
     pin.computeAllTerms(model, data, q, v)
     M = data.M
     nle = data.nle
+    _require_positive_mass(M)
     return np.linalg.solve(M, tau - nle)
+
+
+def _require_positive_mass(matrix: np.ndarray) -> None:
+    if not np.all(np.isfinite(matrix)):
+        raise ValueError("Mass matrix contains non-finite values; check model inertias")
+    try:
+        np.linalg.cholesky(matrix)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError(
+            "Mass matrix is singular or not positive definite. Check zero-mass/inertia "
+            "joints; lock passive joints with pin.buildReducedModel or supply measured inertias."
+        ) from exc
 
 
 def _check_tau_shape(model: pin.Model, tau: np.ndarray, func_name: str) -> None:

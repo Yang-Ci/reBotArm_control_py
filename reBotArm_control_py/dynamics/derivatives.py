@@ -29,6 +29,14 @@ from ..kinematics.robot_model import pad_q_for_model
 # 质量矩阵 M(q) 的偏导
 # --------------------------------------------------------------------------- #
 
+def _rnea_derivatives(model, data, q, v, a):
+    # Native traversal only fills structural ancestor/subtree entries.
+    # Clear matrices to avoid stale cross-branch entries with reused Data.
+    data.dtau_dq.fill(0.0)
+    data.dtau_dv.fill(0.0)
+    data.M.fill(0.0)
+    return pin.computeRNEADerivatives(model, data, q, v, a)
+
 def compute_mass_matrix_derivatives(
     model: Optional[pin.Model] = None,
     q: Optional[np.ndarray] = None,
@@ -36,8 +44,9 @@ def compute_mass_matrix_derivatives(
 ) -> np.ndarray:
     """计算质量矩阵 \\(M(q)\\) 对关节位置 \\(q\\) 的偏导数。
 
-    返回三维数组 ``dMdq[j]``，其中第 j 个面 (nv, nv) 为
-    \\(\\frac{\\partial M}{\\partial q_j}(q)\\)。
+    返回三维数组 ``dMdq[j]``，其中第 j 个面 (nv, nv) 为沿第 j 个
+    切空间方向的导数。对于一维转动/移动关节，这就是对关节位置的偏导。
+    利用 RNEA 的解析导数计算，不调用不存在的 computeMassMatrixDerivatives。
 
     参数:
         model: 动力学模型。若为 None，则自动加载。
@@ -45,7 +54,7 @@ def compute_mass_matrix_derivatives(
         data:  Pinocchio 数据对象。若为 None，则自动创建。
 
     返回:
-        shape=(nq, nv, nv) 的偏导数张量。
+        shape=(nv, nv, nv) 的偏导数张量。
     """
     if model is None:
         model = load_dynamics_model()
@@ -58,10 +67,17 @@ def compute_mass_matrix_derivatives(
 
     _check_q_shape(model, q, "compute_mass_matrix_derivatives")
 
-    dMdq = np.zeros((model.nq, model.nv, model.nv))
-    for j in range(model.nq):
-        pin.computeMassMatrixDerivatives(model, data, q, j)
-        dMdq[j] = data.dMassdq.copy()
+    # At v=0: d(rnea(q,0,e_k))/dq - dg/dq = d(M(q)e_k)/dq.
+    # Configuration derivatives in Pinocchio are with respect to tangent nv.
+    zero = np.zeros(model.nv)
+    gravity_derivative = np.asarray(
+        _rnea_derivatives(model, data, q, zero, zero)[0]).copy()
+    dMdq = np.zeros((model.nv, model.nv, model.nv))
+    for k in range(model.nv):
+        acceleration = np.zeros(model.nv)
+        acceleration[k] = 1.0
+        derivative = np.asarray(_rnea_derivatives(model, data, q, zero, acceleration)[0])
+        dMdq[:, :, k] = (derivative - gravity_derivative).T
 
     return dMdq
 
@@ -80,7 +96,7 @@ def compute_rnea_derivatives(
     """计算 RNEA 输出 \\(\\tau = rnea(q, \\dot{q}, \\ddot{q})\\) 的偏导数。
 
     返回三个雅可比矩阵：
-    - \\(\\frac{\\partial \\tau}{\\partial q}\\) — shape=(nv, nq)
+    - \\(\\frac{\\partial \\tau}{\\partial q}\\) — shape=(nv, nv)，沿配置切空间求导
     - \\(\\frac{\\partial \\tau}{\\partial \\dot{q}}\\) — shape=(nv, nv)
     - \\(\\frac{\\partial \\tau}{\\partial \\ddot{q}}\\) — shape=(nv, nv)，即质量矩阵 M(q)
 
@@ -109,13 +125,10 @@ def compute_rnea_derivatives(
 
     _check_q_shape(model, q, "compute_rnea_derivatives")
     _check_v_shape(model, v, "compute_rnea_derivatives")
+    _check_v_shape(model, a, "compute_rnea_derivatives acceleration")
 
-    pin.computeRNEADerivatives(model, data, q, v, a)
-    return (
-        data.dtau_dq.copy(),
-        data.dtau_dv.copy(),
-        data.dtau_da.copy(),
-    )
+    derivatives = _rnea_derivatives(model, data, q, v, a)
+    return tuple(np.asarray(value).copy() for value in derivatives)
 
 
 # --------------------------------------------------------------------------- #
@@ -131,7 +144,7 @@ def compute_coriolis_derivatives(
     """计算非线性项 \\(nle(q, \\dot{q}) = C(q, \\dot{q})\\dot{q} + g(q)\\) 的偏导。
 
     返回：
-    - \\(\\frac{\\partial nle}{\\partial q}\\) — shape=(nv, nq)
+    - \\(\\frac{\\partial nle}{\\partial q}\\) — shape=(nv, nv)，沿配置切空间求导
     - \\(\\frac{\\partial nle}{\\partial \\dot{q}}\\) — shape=(nv, nv)
 
     参数:
@@ -157,7 +170,7 @@ def compute_coriolis_derivatives(
     _check_q_shape(model, q, "compute_coriolis_derivatives")
     _check_v_shape(model, v, "compute_coriolis_derivatives")
 
-    pin.computeRNEADerivatives(model, data, q, v, np.zeros(model.nv))
+    _rnea_derivatives(model, data, q, v, np.zeros(model.nv))
     return (
         data.dtau_dq.copy(),
         data.dtau_dv.copy(),
@@ -176,7 +189,7 @@ def compute_generalized_gravity_derivatives(
     """计算重力项 \\(g(q)\\) 对关节位置的偏导。
 
     \\[
-        \\frac{\\partial g}{\\partial q} \\in \\mathbb{R}^{nv \\times nq}
+        \\frac{\\partial g}{\\partial q} \\in \\mathbb{R}^{nv \\times nv}
     \\]
 
     也称为重力海森矩阵（Gravity Hessian）。
@@ -188,7 +201,7 @@ def compute_generalized_gravity_derivatives(
         data:  Pinocchio 数据对象。若为 None，则自动创建。
 
     返回:
-        shape=(nv, nq) 的重力偏导矩阵。
+        shape=(nv, nv) 的重力偏导矩阵（沿配置切空间）。
     """
     if model is None:
         model = load_dynamics_model()
@@ -201,7 +214,7 @@ def compute_generalized_gravity_derivatives(
 
     _check_q_shape(model, q, "compute_generalized_gravity_derivatives")
 
-    pin.computeRNEADerivatives(
+    _rnea_derivatives(
         model, data, q,
         np.zeros(model.nv),
         np.zeros(model.nv),

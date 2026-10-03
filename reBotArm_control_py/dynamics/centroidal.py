@@ -41,8 +41,8 @@ def compute_center_of_mass(
     参数:
         model:       动力学模型。若为 None，则自动加载。
         q:           关节位置向量，shape=(nq,)。若为 None，使用零位。
-        center_zero: 若为 True，返回相对于基坐标系原点的位置。
-                     若为 False，返回全局绝对坐标。
+        center_zero: 历史参数名；True 对应 computeSubtreeComs=False，
+                     跳过各子树质心计算。两种取值均返回世界系整体质心。
         data:        Pinocchio 数据对象。若为 None，则自动创建。
 
     返回:
@@ -102,7 +102,7 @@ def compute_com_velocity(
     _check_q_shape(model, q, "compute_com_velocity")
     _check_v_shape(model, v, "compute_com_velocity")
 
-    pin.computeCentroidalVelocities(model, data, q, v)
+    pin.centerOfMass(model, data, q, v)
     return data.vcom[0].copy()
 
 

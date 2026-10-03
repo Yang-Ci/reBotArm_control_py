@@ -13,17 +13,10 @@ from ..kinematics.robot_model import load_robot_model
 EARTH_GRAVITY: tuple[float, float, float] = (0.0, 0.0, -9.81)
 ZERO_GRAVITY: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
-_CACHED_MODEL: pin.Model | None = None
-
-
-def load_dynamics_model(urdf_path: str | None = None) -> pin.Model:
-    global _CACHED_MODEL
-    if _CACHED_MODEL is not None and urdf_path is None:
-        return _CACHED_MODEL
-    model = load_robot_model(urdf_path)
-    if urdf_path is None:
-        _CACHED_MODEL = model
-    return model
+def load_dynamics_model(urdf_path: str | None = None, *,
+                        hardware_config_path: str | None = None) -> pin.Model:
+    # A mutable gravity field must belong to the caller, not a global singleton.
+    return load_robot_model(urdf_path, hardware_config_path=hardware_config_path)
 
 
 def get_default_gravity() -> np.ndarray:
@@ -32,12 +25,13 @@ def get_default_gravity() -> np.ndarray:
 
 def set_gravity(model: pin.Model, gravity: tuple[float, float, float] | np.ndarray) -> None:
     g = np.asarray(gravity, dtype=float)
-    model.gravity = pin.Motion(g)
+    if g.shape != (3,) or not np.all(np.isfinite(g)):
+        raise ValueError("gravity must be a finite 3-vector")
+    model.gravity = pin.Motion(g, np.zeros(3))
 
 
 def get_gravity(model: pin.Model) -> np.ndarray:
-    g = model.gravity
-    return np.array([g.linear.x, g.linear.y, g.linear.z])
+    return np.asarray(model.gravity.linear, dtype=float).copy()
 
 
 def neutral_configuration(model: pin.Model | None = None) -> np.ndarray:

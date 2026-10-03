@@ -3,7 +3,7 @@
 给定关节位置、速度、加速度，计算所需关节力矩 \\(\\tau\\)：
 
 \\[
-    \\tau = M(q) \\ddot{q} + C(q, \\dot{q}) \\dot{q} + g(q) + J^T f_{ext}
+    \\tau = M(q) \\ddot{q} + C(q, \\dot{q}) \\dot{q} + g(q) - J^T f_{ext}
 \\]
 
 使用 RNEA（Recursive Newton-Euler Algorithm）算法，O(n) 时间复杂度。
@@ -60,7 +60,7 @@ def compute_inverse_dynamics(
             v = robot.get_joint_velocities()
             a = np.zeros(6)  # 零加速度 = 纯重力平衡力矩
 
-            tau_gravity_balance = compute_inverse_dynamics(q, v, a)
+            tau_gravity_balance = compute_inverse_dynamics(q=q, v=v, a=a)
     """
     if model is None:
         model = load_dynamics_model()
@@ -111,7 +111,7 @@ def compute_generalized_gravity(
             from reBotArm_control_py.dynamics import compute_generalized_gravity
 
             q = robot.get_joint_positions()
-            tau_g = compute_generalized_gravity(q)
+            tau_g = compute_generalized_gravity(q=q)
 
             # 重力补偿控制（仅重力前馈）
             tau_control = tau_g

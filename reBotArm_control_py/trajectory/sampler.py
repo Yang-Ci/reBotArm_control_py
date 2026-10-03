@@ -52,27 +52,29 @@ class CartesianTrajectoryResult:
     n_points: int
 
 
-def _apply_profile(t: float, profile: TrajProfile, accel_ratio: float) -> float:
-    """归一化时间 t∈[0,1] 经时间剖面映射到 s∈[0,1]。"""
+def profile_state(t: float, profile: TrajProfile, accel_ratio: float = 0.25):
+    """Return path progress and its first/second normalized-time derivatives."""
     t = max(0.0, min(1.0, t))
     if profile == TrajProfile.LINEAR:
-        return t
+        return t, 1.0, 0.0
     if profile == TrajProfile.MIN_JERK:
-        t2 = t * t
-        t3 = t2 * t
-        t4 = t3 * t
-        t5 = t4 * t
-        return 10.0 * t3 - 15.0 * t4 + 6.0 * t5
+        return (t ** 3 * (10.0 - 15.0 * t + 6.0 * t * t),
+                30.0 * t * t * (1.0 - t) ** 2,
+                60.0 * t * (1.0 - t) * (1.0 - 2.0 * t))
     if profile == TrajProfile.TRAPEZOID:
         ta = max(0.01, min(0.49, accel_ratio))
-        vm = 2.0 / (1.0 - ta)
+        vm = 1.0 / (1.0 - ta)
         if t <= ta:
-            return 0.5 * vm / ta * t * t
+            return 0.5 * vm / ta * t * t, vm / ta * t, vm / ta
         if t <= 1.0 - ta:
-            return 0.5 * vm * ta + vm * (t - ta)
+            return vm * (t - 0.5 * ta), vm, 0.0
         dt = 1.0 - t
-        return 1.0 - 0.5 * vm / ta * dt * dt
-    return t
+        return 1.0 - 0.5 * vm / ta * dt * dt, vm / ta * dt, -vm / ta
+    raise ValueError(f"Unknown trajectory profile: {profile}")
+
+
+def _apply_profile(t: float, profile: TrajProfile, accel_ratio: float) -> float:
+    return profile_state(t, profile, accel_ratio)[0]
 
 
 def _se3_interpolate(a, b, s) -> pin.SE3:
@@ -101,10 +103,12 @@ def plan_cartesian_geodesic_trajectory(
     返回:
         :class:`CartesianTrajectoryResult`。
     """
-    if duration <= 0.0:
+    if not np.isfinite(duration) or duration <= 0.0:
         raise ValueError("duration 必须 > 0")
     if params is None:
         params = TrajPlanParams()
+    if not np.isfinite(params.dt) or params.dt <= 0.0:
+        raise ValueError("dt must be finite and positive")
 
     traj = CartesianTrajectory()
     n = max(2, int(np.ceil(duration / params.dt)) + 1)

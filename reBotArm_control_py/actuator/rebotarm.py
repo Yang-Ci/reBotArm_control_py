@@ -48,7 +48,7 @@ def _resolve_hw_cfg_path(hw_yaml: str | None = None) -> Path:
     if hw_yaml is None:
         if not _GLOBAL_CFG.exists():
             raise FileNotFoundError(f"{_GLOBAL_CFG} not found")
-        data = yaml.safe_load(_GLOBAL_CFG.read_text())
+        data = yaml.safe_load(_GLOBAL_CFG.read_text(encoding="utf-8"))
         hw_yaml = data.get("hardware_yaml") if data else None
         if not hw_yaml:
             raise ValueError("hardware_yaml not set in rebotarm.yaml")
@@ -85,7 +85,7 @@ class JointCfg:
 def load_cfg(hw_yaml: str | None = None) -> dict:
     hw_path = _resolve_hw_cfg_path(hw_yaml)
 
-    with open(hw_path, "r") as f:
+    with open(hw_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     joints = []
@@ -114,6 +114,7 @@ def load_cfg(hw_yaml: str | None = None) -> dict:
         "groups": data.get("groups", {}),
         "joints": joints,
         "arm_control_mode": str(data.get("arm_control_mode", "posvel")),
+        "motion_control": data.get("motion_control", {}) or {},
     }
 
 
@@ -128,7 +129,7 @@ def load_gravity_compensation_config(
     compatible and return their legacy/default gravity-compensation mapping.
     """
     hw_path = _resolve_hw_cfg_path(hw_yaml)
-    with open(hw_path, "r") as f:
+    with open(hw_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
     gravity_cfg = data.get("gravity_compensation", {}) or {}
@@ -263,6 +264,8 @@ class JointGroup:
         self._mit_kp: np.ndarray = np.array([j.kp for j in self._jcfgs], dtype=np.float64)
         self._mit_kd: np.ndarray = np.array([j.kd for j in self._jcfgs], dtype=np.float64)
         self._pv_vlim: np.ndarray = np.array([j.vlim for j in self._jcfgs], dtype=np.float64)
+        self.send_error_count = 0
+        self.last_send_error: str | None = None
 
     # ── 属性 ────────────────────────────────────────────────────────────
 
@@ -280,7 +283,7 @@ class JointGroup:
 
     # ── 使能 / 失能 ────────────────────────────────────────────────────
 
-    def enable(self) -> None:
+    def enable(self, *, strict: bool = False) -> None:
         by_vendor: Dict[str, List[str]] = {}
         for jc in self._jcfgs:
             by_vendor.setdefault(jc.vendor, []).append(jc.name)
@@ -289,6 +292,8 @@ class JointGroup:
                 self._cm[vendor].enable_all()
             except CallError as e:
                 print(f"[{self.name}/enable] {e}")
+                if strict:
+                    raise
             time.sleep(0.05)
 
     def disable(self) -> None:
@@ -386,6 +391,8 @@ class JointGroup:
         kp: Optional[np.ndarray] = None,
         kd: Optional[np.ndarray] = None,
         tau: Optional[np.ndarray] = None,
+        *,
+        strict: bool = False,
     ) -> None:
         n = self.num_joints
         pos = np.asarray(pos, dtype=np.float64).reshape(-1)
@@ -397,7 +404,11 @@ class JointGroup:
             kp = self._mit_kp
         if kd is None:
             kd = self._mit_kd
-
+        vectors = [np.asarray(x, dtype=float).reshape(-1) for x in (pos, vel, kp, kd, tau)]
+        if any(x.shape != (n,) or not np.all(np.isfinite(x)) for x in vectors):
+            raise ValueError("MIT commands require one finite value per joint")
+        pos, vel, kp, kd, tau = vectors
+        first_error = None
         for i, jc in enumerate(self._jcfgs):
             try:
                 self._mm[jc.name].send_mit(
@@ -407,8 +418,12 @@ class JointGroup:
                     float(kd[i]),
                     float(tau[i]),
                 )
-            except CallError:
-                pass
+            except CallError as error:
+                self.send_error_count += 1
+                self.last_send_error = f"{jc.name}: {error}"
+                first_error = first_error or error
+        if strict and first_error is not None:
+            raise first_error
 
     # ── POS_VEL 发送 ───────────────────────────────────────────────────
 
@@ -416,19 +431,30 @@ class JointGroup:
         self,
         pos: np.ndarray,
         vlim: Optional[np.ndarray] = None,
+        *,
+        strict: bool = False,
     ) -> None:
         pos = np.asarray(pos, dtype=np.float64).reshape(-1)
         if vlim is None:
             vlim = self._pv_vlim
         vlim = np.asarray(vlim, dtype=np.float64).reshape(-1)
-        for i in range(min(len(pos), len(vlim))):
+        if (pos.shape != (self.num_joints,) or vlim.shape != pos.shape
+                or not np.all(np.isfinite(pos)) or not np.all(np.isfinite(vlim))
+                or np.any(vlim <= 0)):
+            raise ValueError("POS_VEL requires finite positions and positive speed limits per joint")
+        first_error = None
+        for i in range(self.num_joints):
             try:
                 self._mm[self._jcfgs[i].name].send_pos_vel(
                     float(pos[i]),
                     float(vlim[i]),
                 )
-            except CallError:
-                pass
+            except CallError as error:
+                self.send_error_count += 1
+                self.last_send_error = f"{self._jcfgs[i].name}: {error}"
+                first_error = first_error or error
+        if strict and first_error is not None:
+            raise first_error
 
     # ── VEL 发送 ───────────────────────────────────────────────────────
 
@@ -462,10 +488,11 @@ class JointGroup:
                 pass
         self._poll_feedback()
 
-    def get_positions(self, request_feedback: bool = True) -> np.ndarray:
-        # 始终发送显式请求帧 + 处理接收队列
-        # motorbridge 内部会针对 RS/DM 分别处理
-        self._request_feedback()
+    def get_positions(self, request_feedback: bool = True, *, strict: bool = False) -> np.ndarray:
+        if request_feedback:
+            self._request_feedback()
+        else:
+            self._poll_feedback()
         
         out: list[float] = []
         for jc in self._jcfgs:
@@ -475,14 +502,39 @@ class JointGroup:
                 out.append(st.pos)
             else:
                 # 缓存为空时回退到 SDO 读取（安全兜底）
-                if jc.vendor == "robstride":
+                if request_feedback and jc.vendor == "robstride":
                     try:
                         out.append(float(m.robstride_get_param_f32(0x7019)))
                         continue
                     except CallError:
                         pass
+                if strict:
+                    raise RuntimeError(f"No position feedback for {jc.name}")
                 out.append(0.0)
         return np.array(out, dtype=np.float64)
+
+    def read_position_sample(self, timeout_ms: int = 20):
+        """Read RS mechPos explicitly, outside the high-frequency control loop.
+
+        Returns positions, oldest local read time, and source. SDK 0.5 has no
+        cache timestamp; cached DM feedback cannot prove hardware freshness.
+        """
+        if all(j.vendor == "robstride" for j in self._jcfgs):
+            values, stamps = [], []
+            for jc in self._jcfgs:
+                # The ordinary getter imposes >=150 ms per host and probes
+                # fallback IDs. Exact-host reads preserve this worker's timeout.
+                values.append(self._mm[jc.name].robstride_get_param_f32_host_id(
+                    0x7019, jc.feedback_id, timeout_ms))
+                stamps.append(time.monotonic())
+            q = np.array(values, dtype=float)
+            stamp, source = min(stamps), "rs_mechpos"
+        else:
+            q = self.get_positions(strict=True)
+            stamp, source = time.monotonic(), "sdk_cache_without_timestamp"
+        if not np.all(np.isfinite(q)):
+            raise RuntimeError("Non-finite joint feedback")
+        return q, stamp, source
 
     def get_velocities(self, request_feedback: bool = True) -> np.ndarray:
         # NOTE (RobStride): the cached state has the same staleness problem as
@@ -527,7 +579,8 @@ class RebotArm:
     """
 
     def __init__(self, hw_yaml: str | None = None) -> None:
-        self._hw_yaml = _resolve_hw_cfg_path(hw_yaml).name
+        self.hardware_config_path = _resolve_hw_cfg_path(hw_yaml).resolve()
+        self._hw_yaml = self.hardware_config_path.name
         cfg = load_cfg(hw_yaml)
 
         self._name: str = cfg["name"]
@@ -536,6 +589,7 @@ class RebotArm:
         self._all_joints: List[JointCfg] = cfg["joints"]
         self._groups_def: dict = cfg["groups"]
         self._arm_control_mode: str = cfg.get("arm_control_mode", "posvel")
+        self.motion_control: dict = cfg["motion_control"]
 
         self._ctrl_map: Dict[str, Controller] = {}
         self._motor_map: Dict[str, any] = {}
@@ -546,6 +600,9 @@ class RebotArm:
         self._ctrl_fn: Optional[Callable] = None
         self._ctrl_rate: float = self._rate
         self._connected: bool = False
+        self._control_stop = threading.Event()
+        self.control_loop_stats = {"iterations": 0, "overruns": 0, "last_dt": 0.0,
+                                   "max_dt": 0.0, "last_error": None}
 
         self._build_groups()
 
@@ -655,9 +712,10 @@ class RebotArm:
 
     # ── 全局使能 / 失能 ────────────────────────────────────────────────
 
-    def enable_all(self) -> None:
+    def enable_all(self, *, strict: bool = False) -> None:
         for g in self._groups.values():
-            g.enable()
+            if not isinstance(g, NoOpGroup):
+                g.enable(strict=strict)
 
     def disable_all(self) -> None:
         for g in self._groups.values():
@@ -789,8 +847,13 @@ class RebotArm:
     ) -> None:
         if self.control_loop_active:
             raise RuntimeError("控制循环已在运行，请先调用 stop_control_loop()")
-        self._running = True
         self._ctrl_rate = rate if rate is not None else self._rate
+        if not np.isfinite(self._ctrl_rate) or self._ctrl_rate <= 0:
+            raise ValueError("Control rate must be finite and positive")
+        self._running = True
+        self._control_stop.clear()
+        self.control_loop_stats = {"iterations": 0, "overruns": 0, "last_dt": 0.0,
+                                   "max_dt": 0.0, "last_error": None}
         self._ctrl_fn = control_fn
         self._ctrl_thread = threading.Thread(
             target=self._control_loop_impl,
@@ -800,23 +863,34 @@ class RebotArm:
         self._ctrl_thread.start()
 
     def _control_loop_impl(self) -> None:
-        dt = 1.0 / self._ctrl_rate
+        period = 1.0 / self._ctrl_rate
+        previous = None
+        deadline = time.perf_counter()
         while self._running:
             t0 = time.perf_counter()
+            dt = period if previous is None else t0 - previous
+            previous = t0
+            self.control_loop_stats["iterations"] += 1
+            self.control_loop_stats["last_dt"] = dt
+            self.control_loop_stats["max_dt"] = max(dt, self.control_loop_stats["max_dt"])
             try:
                 self._ctrl_fn(self, dt)
-            except Exception:
-                if self._running:
-                    raise
-            elapsed = time.perf_counter() - t0
-            sleep_time = dt - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+            except Exception as error:
+                self.control_loop_stats["last_error"] = repr(error)
+                self._running = False
+                return
+            deadline += period
+            now = time.perf_counter()
+            if now > deadline:
+                self.control_loop_stats["overruns"] += 1
+                deadline = now + period
+            self._control_stop.wait(max(0.0, deadline - time.perf_counter()))
 
     def stop_control_loop(self) -> None:
         self._running = False
+        self._control_stop.set()
         t = getattr(self, "_ctrl_thread", None)
-        if t is not None and t.is_alive():
+        if t is not None and t.is_alive() and t is not threading.current_thread():
             t.join(timeout=5.0)
 
     # ── 上下文管理器 ───────────────────────────────────────────────────────

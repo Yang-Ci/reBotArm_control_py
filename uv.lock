@@ -1081,7 +1081,7 @@ dependencies = [
 requires-dist = [
     { name = "matplotlib", specifier = ">=3.10.0" },
     { name = "meshcat", specifier = ">=0.3.2" },
-    { name = "motorbridge", specifier = ">=0.4.9" },
+    { name = "motorbridge", specifier = ">=0.5.0" },
     { name = "numpy", specifier = ">=1.23.4" },
     { name = "pin", specifier = ">=3.9.0" },
     { name = "pyyaml", specifier = ">=6.0" },

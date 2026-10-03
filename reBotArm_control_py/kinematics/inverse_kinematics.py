@@ -7,14 +7,14 @@
 from __future__ import annotations
 
 import math
-import random
 from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
 import pinocchio as pin
 
-from .forward_kinematics import compute_fk
+from .robot_model import pad_q_for_model
+
 
 
 # ─── 参数与结果数据结构 ────────────────────────────────────────────────────────
@@ -26,6 +26,7 @@ class IKParams:
     tolerance: float = 1e-4    # 收敛阈值 ||err||
     step_size: float = 0.5    # 每步更新的缩放系数
     damping: float = 1e-6      # Tikhonov 正则化系数 λ
+    max_step: float = 0.05    # maximum joint increment per numerical iteration
 
 
 @dataclass
@@ -76,8 +77,12 @@ def _clamp_config(model: pin.Model, q: np.ndarray) -> np.ndarray:
                   model.lowerPositionLimit, -np.inf)
     hi = np.where(np.isfinite(model.upperPositionLimit),
                   model.upperPositionLimit, np.inf)
-    clamped = np.maximum(q, lo)
-    clamped = np.minimum(clamped, hi)
+    clamped = np.asarray(q, dtype=float).copy()
+    # Quaternion/cos-sin coordinates cannot be clipped independently.
+    for joint in model.joints[1:]:
+        if joint.nq == 1 and joint.nv == 1:
+            i = joint.idx_q
+            clamped[i] = np.clip(clamped[i], lo[i], hi[i])
     return clamped
 
 
@@ -89,7 +94,7 @@ def _compute_error(
     target: pin.SE3,
     position_only: bool = False,
 ) -> tuple[float, np.ndarray]:
-    """计算当前末端与目标之间的局部坐标系误差。
+    """计算当前末端与目标的误差（位姿为 LOCAL，位置为世界系）。
 
     返回:
         ``(err_norm, err_vector)``。仅位置模式返回 3 维线位移误差，
@@ -99,9 +104,7 @@ def _compute_error(
     pin.updateFramePlacements(model, data)
     T_cur = data.oMf[end_frame_id]
     if position_only:
-        # LOCAL 雅可比的线速度部分在末端局部坐标系中表达，因此位置
-        # 误差也要从世界坐标系旋转到该坐标系中。
-        err = T_cur.rotation.T @ (target.translation - T_cur.translation)
+        err = target.translation - T_cur.translation
     else:
         err = pin.log6(T_cur.inverse() * target).vector
     return float(np.linalg.norm(err)), err
@@ -114,6 +117,7 @@ def _damped_step_with_active_limits(
     err: np.ndarray,
     damping: float,
     step_size: float,
+    controlled_joints: int | None = None,
 ) -> np.ndarray:
     """计算阻尼最小二乘步，并把已到限位且继续向外的关节设为活动约束。
 
@@ -122,6 +126,10 @@ def _damped_step_with_active_limits(
     重新求解，使位于限位上的初始构型也能离开奇异/边界位置。
     """
     free = np.ones(model.nv, dtype=bool)
+    if controlled_joints is not None:
+        for joint in model.joints[1:]:
+            if joint.idx_q >= controlled_joints:
+                free[joint.idx_v:joint.idx_v + joint.nv] = False
     limit_eps = 1e-10
     dq = np.zeros(model.nv)
 
@@ -182,13 +190,12 @@ def solve_ik(
         data:             Pinocchio 数据缓存（需外部创建并传入）。
         end_frame_id:     末端帧索引。
         target:           目标 SE3 位姿。
-        q_init:           初始关节配置。若维度小于 model.nq，超出部分视为被动关节补 0；
-                          若维度大于 model.nq，多余部分被忽略。
+        q_init:           初始关节配置。缺少的配置以 pin.neutral(model) 补齐；
+                          非法维度、非有限数及非归一化旋转配置会被拒绝。
         params:           IK 参数，默认 IKParams{}。
         controlled_joints: 受控关节数量（默认为 model.nq）。
-                          传入比 model.nq 小的值时，IK 在完整模型空间求解，
-                          但 q_init 只需提供受控关节数，返回值也只截取受控部分。
-                          这使得调用方无需感知 URDF 中被动关节的存在。
+                          只求解前缀受控关节的速度，被动关节保持 neutral，
+                          返回值只截取受控部分。不得在一个多维关节中间截断。
         position_only:     为 True 时只约束末端位置，不约束姿态。
 
     返回:
@@ -197,13 +204,22 @@ def solve_ik(
     if params is None:
         params = IKParams()
 
+    if (params.max_iter <= 0 or not np.isfinite(params.tolerance) or params.tolerance <= 0
+            or not np.isfinite(params.damping) or params.damping < 0
+            or not 0 < params.step_size <= 1 or not np.isfinite(params.max_step)
+            or params.max_step <= 0):
+        raise ValueError("Invalid IK parameters")
+
     nq = model.nq
     n_ctrl = controlled_joints if controlled_joints is not None else nq
 
-    # 补齐 q_init 到 model.nq
-    q = np.zeros(nq)
-    n_provided = min(q_init.shape[0], n_ctrl)
-    q[:n_provided] = q_init[:n_provided]
+    if not isinstance(end_frame_id, (int, np.integer)) or not 0 <= end_frame_id < model.nframes:
+        raise ValueError("Invalid end-effector frame index")
+    # Configuration dimension nq and tangent dimension nv are not interchangeable.
+    q = pad_q_for_model(model, q_init, n_ctrl)
+    for joint in model.joints[1:]:
+        if joint.idx_q < n_ctrl < joint.idx_q + joint.nq:
+            raise ValueError("controlled_joints must not split a joint configuration")
     prev_err, err = _compute_error(
         model, data, end_frame_id, q, target, position_only,
     )
@@ -218,15 +234,21 @@ def solve_ik(
         pin.computeJointJacobians(model, data, q)
         J = pin.getFrameJacobian(model, data, end_frame_id, pin.LOCAL)
         if position_only:
-            J = J[:3, :]
+            J = data.oMf[end_frame_id].rotation @ J[:3, :]
+        else:
+            displacement = data.oMf[end_frame_id].inverse() * target
+            J = pin.Jlog6(displacement.inverse()) @ J
 
         # 自适应阻尼：误差较大时适当增加阻尼（Levenberg-Marquardt 风格）
         lam = params.damping * max(1.0, prev_err * 10.0)
 
         # 带活动限位约束的阻尼最小二乘。
         dq = _damped_step_with_active_limits(
-            model, q, J, err, lam, params.step_size,
+            model, q, J, err, lam, params.step_size, n_ctrl,
         )
+        max_increment = float(np.max(np.abs(dq)))
+        if max_increment > params.max_step:
+            dq *= params.max_step / max_increment
 
         if float(np.linalg.norm(dq)) < 1e-12:
             return IKResult(
@@ -300,16 +322,10 @@ def solve_ik_with_retry(
         q_seed[:] = best.q
         return best
 
-    lo = model.lowerPositionLimit
-    hi = model.upperPositionLimit
-    nq = model.nq
-
     for _ in range(max_retries):
-        q_rand = np.zeros(nq)
-        for j in range(nq):
-            l = lo[j] if np.isfinite(lo[j]) else -math.pi
-            h = hi[j] if np.isfinite(hi[j]) else math.pi
-            q_rand[j] = random.uniform(l, h)
+        lo = np.where(np.isfinite(model.lowerPositionLimit), model.lowerPositionLimit, -math.pi)
+        hi = np.where(np.isfinite(model.upperPositionLimit), model.upperPositionLimit, math.pi)
+        q_rand = pin.randomConfiguration(model, lo, hi)
         r = solve_ik(model, data, end_frame_id, target, q_rand, params)
         if r.error < best.error:
             best = r

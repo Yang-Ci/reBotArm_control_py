@@ -207,7 +207,8 @@ class GravityCompensation:
         from ..kinematics import load_robot_model
         from ..kinematics.robot_model import pad_q_for_model
 
-        self._gc_model = load_robot_model()
+        self._gc_model = load_robot_model(
+            hardware_config_path=str(self.rebotarm.hardware_config_path))
         self._gc_data = self._gc_model.createData()
         self._pad_q_for_model = pad_q_for_model
 

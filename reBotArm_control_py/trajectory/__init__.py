@@ -21,6 +21,9 @@ from .trajectory_planner import (
     plan_joint_space_trajectory,
     compute_traj_stats,
 )
+from .joint_reference import JointPathReference, JointReferenceSample
+
+CLIKParams = IKParams
 
 __all__ = [
     # 采样器
@@ -39,4 +42,6 @@ __all__ = [
     "TrajStats",
     "plan_joint_space_trajectory",
     "compute_traj_stats",
+    "JointPathReference",
+    "JointReferenceSample",
 ]

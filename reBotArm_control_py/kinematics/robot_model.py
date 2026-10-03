@@ -15,31 +15,29 @@ _cfg_dir = Path(__file__).resolve().parents[2] / "config"
 _global_cfg = _cfg_dir / "rebotarm.yaml"
 _project_root = _cfg_dir.parent
 
-_hw_cfg_cache: dict | None = None
-
-
-def _hw_config() -> dict:
+def _hw_config(hardware_config_path: str | None = None) -> dict:
     """Load kinematics fields (urdf_path, end_effector_frame) from the hardware YAML."""
-    global _hw_cfg_cache
-    if _hw_cfg_cache is not None:
-        return _hw_cfg_cache
-
-    hw_yaml = ""
-    if _global_cfg.exists():
-        global_data = yaml.safe_load(_global_cfg.read_text()) or {}
+    hw_yaml = hardware_config_path or ""
+    if not hw_yaml and _global_cfg.exists():
+        global_data = yaml.safe_load(_global_cfg.read_text(encoding="utf-8")) or {}
         hw_yaml = global_data.get("hardware_yaml", hw_yaml)
 
-    hw_path = _cfg_dir / hw_yaml
-    if not hw_path.exists():
+    hw_path = Path(hw_yaml)
+    if not hw_path.is_absolute():
+        hw_path = _cfg_dir / hw_path
+    if not hw_yaml or not hw_path.is_file():
         raise FileNotFoundError(f"Hardware config not found: {hw_path}")
 
-    _hw_cfg_cache = yaml.safe_load(hw_path.read_text()) or {}
-    return _hw_cfg_cache
+    config = yaml.safe_load(hw_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(config, dict):
+        raise ValueError(f"Hardware config must be a mapping: {hw_path}")
+    return config
 
 
-def _resolve_urdf(urdf_path: str | None = None) -> Tuple[str, List[str]]:
+def _resolve_urdf(urdf_path: str | None = None, *,
+                  hardware_config_path: str | None = None) -> Tuple[str, List[str]]:
     if urdf_path is None:
-        urdf_path = _hw_config().get("urdf_path", "")
+        urdf_path = _hw_config(hardware_config_path).get("urdf_path", "")
 
     if not urdf_path:
         raise ValueError("urdf_path is empty. Set it in the hardware config file.")
@@ -56,13 +54,14 @@ def _resolve_urdf(urdf_path: str | None = None) -> Tuple[str, List[str]]:
     return urdf_path, package_dirs
 
 
-def load_robot_model(urdf_path: str | None = None) -> pin.Model:
-    path, _ = _resolve_urdf(urdf_path)
+def load_robot_model(urdf_path: str | None = None, *,
+                     hardware_config_path: str | None = None) -> pin.Model:
+    path, _ = _resolve_urdf(urdf_path, hardware_config_path=hardware_config_path)
     return pin.buildModelFromUrdf(path)
 
 
-def get_end_effector_frame() -> str:
-    return _hw_config().get("end_effector_frame", "gripper_end")
+def get_end_effector_frame(hardware_config_path: str | None = None) -> str:
+    return _hw_config(hardware_config_path).get("end_effector_frame", "gripper_end")
 
 
 def get_joint_count() -> int:
@@ -78,13 +77,21 @@ def get_joint_limits(model: pin.Model) -> List[Tuple[float, float]]:
     limits = []
     for name in get_joint_names(model):
         jid = model.getJointId(name)
-        lo, hi = float(model.lowerPositionLimit[jid]), float(model.upperPositionLimit[jid])
+        joint = model.joints[jid]
+        if joint.nq != 1:
+            raise ValueError(f"Joint {name} is not a scalar configuration joint")
+        iq = joint.idx_q
+        lo, hi = float(model.lowerPositionLimit[iq]), float(model.upperPositionLimit[iq])
         limits.append((-np.inf, np.inf) if np.isinf(lo) and np.isinf(hi) else (lo, hi))
     return limits
 
 
-def get_end_effector_frame_id(model: pin.Model) -> int:
-    return model.getFrameId(get_end_effector_frame())
+def get_end_effector_frame_id(model: pin.Model, hardware_config_path: str | None = None) -> int:
+    name = get_end_effector_frame(hardware_config_path)
+    frame_id = model.getFrameId(name)
+    if frame_id >= model.nframes:
+        raise ValueError(f"End-effector frame {name!r} not found in model")
+    return frame_id
 
 
 def get_all_frame_names(model: pin.Model) -> List[str]:
@@ -94,6 +101,13 @@ def get_all_frame_names(model: pin.Model) -> List[str]:
 def pad_q_for_model(model: pin.Model, q: np.ndarray, controlled_joints: int | None = None) -> np.ndarray:
     nq = model.nq
     n_ctrl = controlled_joints if controlled_joints is not None else nq
-    padded = np.zeros(nq)
+    if not isinstance(n_ctrl, (int, np.integer)) or not 0 < n_ctrl <= nq:
+        raise ValueError("controlled_joints must be an integer in [1, model.nq]")
+    q = np.asarray(q, dtype=float)
+    if q.ndim != 1 or q.size > nq or not np.all(np.isfinite(q)):
+        raise ValueError(f"q must be a finite vector of at most {nq} entries")
+    padded = np.asarray(pin.neutral(model), dtype=float).copy()
     padded[:min(q.shape[0], n_ctrl)] = q[:min(q.shape[0], n_ctrl)]
+    if hasattr(pin, "isNormalized") and not pin.isNormalized(model, padded):
+        raise ValueError("q contains a non-normalized joint configuration")
     return padded

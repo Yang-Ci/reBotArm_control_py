@@ -36,7 +36,8 @@ def compute_fk(
     """
     data = model.createData()
 
-    if q.shape != (model.nq,):
+    q = np.asarray(q, dtype=float)
+    if q.shape != (model.nq,) or not np.all(np.isfinite(q)):
         raise ValueError(
             f"q 必须为形状 ({model.nq},)，实际为 {q.shape}"
         )
@@ -48,6 +49,8 @@ def compute_fk(
         frame_id = get_end_effector_frame_id(model)
     else:
         frame_id = model.getFrameId(frame_name)
+        if frame_id >= model.nframes:
+            raise ValueError(f"Frame {frame_name!r} not found in model")
 
     oMf = data.oMf[frame_id]
 
