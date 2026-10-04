@@ -30,6 +30,7 @@ rate: 250  # Leave headroom for motor replies and rate-limited parameter reads.
 
 # Continuous Cartesian motion (rad, rad/s, rad/s^2, N*m, seconds).
 motion_control:
+  tx_gap_us: 0  # 1 Mbps, 250 Hz: avoid SDK sub-ms sleeps expanding on Windows.
   path_samples: 201
   max_path_joint_step: 0.05
   max_velocity: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
@@ -42,11 +43,15 @@ motion_control:
   feedback_rate: 25
   feedback_timeout_ms: 20
   max_feedback_age: 0.25
+  max_feedback_span: 0.02
   max_control_dt: 0.05
   gravity_scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   feedforward_limit: [18.0, 18.0, 18.0, 8.0, 8.0, 8.0]
   feedforward_filter_time: 0.02
   log_rate: 50
+  settle_joint_tolerance: 0.01
+  settle_duration: 0.2
+  settle_timeout: 2.0
   friction:
     enabled: false  # Enable only after identifying this arm's friction.
     coulomb: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

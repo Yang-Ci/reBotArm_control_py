@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.10, <3.12"
 resolution-markers = [
     "python_full_version >= '3.11'",
@@ -740,18 +740,18 @@ wheels = [
 
 [[package]]
 name = "motorbridge"
-version = "0.5.0"
+version = "0.5.6"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/25/0e/ee33fdc5eb61bc9a903de591b01501eb2307c6d904665d1ef4d4cf501557/motorbridge-0.5.0.tar.gz", hash = "sha256:4020e61317383c2b7dde386dc480ad06aa59fd2401d348d1363c87e64f73e923", size = 42560, upload-time = "2026-07-22T03:04:49.596Z" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/b0/be/3c5fc8f1166119c0d5e8e4cb8452481ad50253117f4f251018b98070004c/motorbridge-0.5.6.tar.gz", hash = "sha256:07abecd895f173b3b790fac114e0fe8e02a4ba87f9de71299b5c2a1b70a3bca4", size = 42965, upload-time = "2026-09-20T09:50:25.808Z" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/c2/02/f91672729116006f33d90a38099b2e72323253c8613fcce7e69d52d0132d/motorbridge-0.5.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:6536a87d8fa30f87a255808bfa6af72b99666cbfe66fce3238755d8b05d61068", size = 1239270, upload-time = "2026-07-22T03:04:29.196Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/8e/ea/8e572c8901d158d8554920c5dc8d5e34a6b0bbc9210c02f3396fb32993b9/motorbridge-0.5.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:92235b3fc40d1e42bbd57f5a17264103f8dc35c7a9af4cc951c0c3b6a4a1a384", size = 1327519, upload-time = "2026-07-22T03:04:30.428Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/0f/f8/2847f976b7c2baf63f5f47601c81dd542d4773f64d2d7ba8b94eab40c216/motorbridge-0.5.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:22079d096ef0e7cc907861ac298b649acdba4acdad7cdcfbc031dd696b737cbb", size = 1346368, upload-time = "2026-07-22T03:04:31.712Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/ac/63/5a6e1cfaf62c6daaf54e3ba05c89ca2fba4c861bf9592361b2eaa4b1c480/motorbridge-0.5.0-cp310-cp310-win_amd64.whl", hash = "sha256:d29a7b50fbfeb872b463a98486ae2c273bef9059accb9e7d9ccd5412414b22d2", size = 1034845, upload-time = "2026-07-22T03:04:32.804Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/4d/04/219d735028ebe2aa2cd3ba459729b75769def4247aa4e3694a7bee2f2069/motorbridge-0.5.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:23b210912df2e9d9e0f4973d9fceaf6c80171a8f523d815ef5187989cac7788f", size = 1239270, upload-time = "2026-07-22T03:04:34.092Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/cc/d8/28070c95ad150a39672bea82639579130fbfd24a62defdda73204f7ed825/motorbridge-0.5.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:1f06c68b7a7be3a40722491684f3c1b82ed39ad8b9adfd1c1c26d7a87bbeb518", size = 1327518, upload-time = "2026-07-22T03:04:35.497Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/5d/aa/5c5dcde34d40cd53f8b83a1a143df5d1dc6c3f168735abe1b25860a7da63/motorbridge-0.5.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a403e31a28148c3836ca715bbdc527f0c730dd0b61ac8b140488d86fc81dcdf1", size = 1346366, upload-time = "2026-07-22T03:04:36.78Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/1d/f2/8356955f7419d0e980d868809e62d0ea03e775034533897efe148066b47d/motorbridge-0.5.0-cp311-cp311-win_amd64.whl", hash = "sha256:1f7fb17017f2065a49f6830833c9458066205c1ca83fec678348e2678d2dd3c3", size = 1034844, upload-time = "2026-07-22T03:04:37.916Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/31/af/13ab257f0b940672d02870458ad957e073d7601f67d52077b2c1450487ac/motorbridge-0.5.6-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:e5903c2e972fe4cc32542dcb94df1bc527b95b10d7d814c441cf655ae389f04e", size = 1250540, upload-time = "2026-09-20T09:50:05.158Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/1d/a4/0a4cf28c362c2456a4e5b323ce61ef7088e28dd52a2f6ac22d078eb1b017/motorbridge-0.5.6-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3bb4dbdd6bf82d9d08000da3e8d252dfc5df6e1a9fc03c62f1d69bec0aaf92df", size = 1351232, upload-time = "2026-09-20T09:50:06.747Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/c9/a8/5c35bd17f365891d86203b175bd63922ef951b8932a27656dd32b6643e58/motorbridge-0.5.6-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ed8612084e1a5cc333d3287d0d7ce53959d8751cf3eb4aa9cc07f139ac2a549f", size = 1370149, upload-time = "2026-09-20T09:50:07.936Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/c7/d9/3c7bb6b7987548a6af195333a5b147b7f6df48772ab7441a2d5662af0816/motorbridge-0.5.6-cp310-cp310-win_amd64.whl", hash = "sha256:ff0184f94ac5bc9849356d44a404c20f6eb342aa3fe75d0c080c17cf6499edad", size = 1034046, upload-time = "2026-09-20T09:50:09.31Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/3b/5d/20472d229e129e779878d3efbd7476a5334b1752be56af80bad75bbda589/motorbridge-0.5.6-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:fd119812909705594b79568e54bc8408bb20eb5d31912eca74e51ea1e4260cf2", size = 1250540, upload-time = "2026-09-20T09:50:10.57Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/69/f3/8aab1afd9d32d7c1d1e102c3b0cc7fccb4763defda3c6f7d76d4afbdf027/motorbridge-0.5.6-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:38b7d0f1d58efa3c73b93dbccf75f985fb6281f95f0dc57fe508d83655fc860d", size = 1351234, upload-time = "2026-09-20T09:50:11.905Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/60/5e/dd706c96ce0e2342eedd3f2799c865d259ccf95f81184be8fbf8edf4e234/motorbridge-0.5.6-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a4dbb84e06fc66c92a403ac03985c9ae4dbd8090eaba66030bdb4e70814c3751", size = 1370149, upload-time = "2026-09-20T09:50:13.185Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/54/a2/9f92450eac197e1dc232844fe211630f49c6bc13e3bc833c1f9de8b6f0f0/motorbridge-0.5.6-cp311-cp311-win_amd64.whl", hash = "sha256:d9d24b028ed9c38ebf627cfb4d2d4233e03da1ca3ef7c2b97f1e4d3b994412cb", size = 1034048, upload-time = "2026-09-20T09:50:14.347Z" },
 ]
 
 [[package]]
@@ -1081,7 +1081,7 @@ dependencies = [
 requires-dist = [
     { name = "matplotlib", specifier = ">=3.10.0" },
     { name = "meshcat", specifier = ">=0.3.2" },
-    { name = "motorbridge", specifier = ">=0.5.0" },
+    { name = "motorbridge", specifier = "==0.5.6" },
     { name = "numpy", specifier = ">=1.23.4" },
     { name = "pin", specifier = ">=3.9.0" },
     { name = "pyyaml", specifier = ">=6.0" },

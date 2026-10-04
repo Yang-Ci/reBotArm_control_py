@@ -2,6 +2,7 @@
 
 针对保持末端姿态、z 方向上升 0.1 m、运动时间 8 s 的场景。修改的是
 `controllers`、`trajectory`、`kinematics` 和 `actuator` 核心实现；示例只增加诊断入口。
+DM 对应的底层修复、500 Hz 优化和真机验证见 [dm_low_speed_motion_fix.md](dm_low_speed_motion_fix.md)。
 
 ## 1. 控制链路
 
@@ -31,7 +32,8 @@
 | `trajectory/sampler.py` | 修复梯形曲线归一化速度，提供解析时间曲线导数 | 梯形曲线原先可能越过终点后跳回 |
 | `config/rebotarm_rs.yaml` | 新增运动约束、反馈、诊断和摩擦配置；RS 默认发送频率 250 Hz | 给回复帧和参数读取留总线余量 |
 
-依赖下限更新为 motorbridge 0.5.0，锁文件已有的 0.5.0 版本保持一致。反馈使用
+依赖与锁文件现在固定为 motorbridge 0.5.6。真机步骤与新增原生锁修复见
+`hardware_validation.md`；仅升级 wheel 不包含该本地补丁。反馈使用
 `robstride_get_param_f32_host_id` 指定配置中的主机 ID；普通 getter 会把超时提升到
 至少 150 ms 并探测备用 ID，不适合这个有界反馈线程。
 
@@ -122,7 +124,8 @@ log lift_10cm_8s.csv
 - 硬件末端控制器要求 MIN_JERK；通用轨迹采样模块仍支持 LINEAR/TRAPEZOID。
 - `safe_home()` 复用同一执行器；存在故障时跳过自动归零。`end()` 是用户请求的结束与断开操作。
 - RS 使用实际参数读取得到反馈年龄；motorbridge 0.5 的 DM 状态没有硬件时间戳，
-  对 DM 缓存的本地读取时间不能证明硬件反馈新鲜程度。
+  对 DM 缓存的本地读取时间不能证明硬件反馈新鲜程度。后续已在本地 0.5.6 原生补丁中
+  增加传感器接收时间和序号，DM 验证见 [dm_low_speed_motion_fix.md](dm_low_speed_motion_fix.md)。
 
 ## 6. 已做验证与限制
 

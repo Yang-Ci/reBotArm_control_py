@@ -78,6 +78,8 @@ arm_model = pin.buildReducedModel(model, locked, pin.neutral(model))
 测试覆盖 RS / DM 模型、配置索引、重力、M/C/g/nle、RNEA/ABA、质心和能量恒等式、
 切空间导数、帧错误及 Data 复用，并覆盖此前的轨迹与故障回归。
 
+首轮验证结果（下面保留当时的测试数量）：
+
 | 后端 | 结果 |
 | --- | --- |
 | 原生 Pinocchio 3.9.0 / Python 3.11.16 | 46 项全部通过 |
@@ -87,12 +89,16 @@ arm_model = pin.buildReducedModel(model, locked, pin.neutral(model))
 第三行只验证替身模式的行为，不是项目支持 Python 3.12 的声明。
 项目声明的运行版本仍为 Python 3.10 / 3.11。
 
+后续真机准备复查把 motorbridge 更新为 0.5.6，并增加生命周期、并行反馈、到位与日志回归。
+当时两个原生版本各 **72 项全部通过**；显式替身模式在 Python 3.11 下 **47 项通过、25 项跳过**。
+新增改动、原生 SDK 锁测试和各平台真机操作见 `hardware_validation.md`。
+
 Windows 原生验证环境可以使用 conda-forge 创建：
 
 ```powershell
 conda create -n rebotarm-native -c conda-forge python=3.11 pinocchio=3.9.0 numpy pytest pyyaml pip
 conda activate rebotarm-native
-python -m pip install motorbridge==0.5.0
+python -m pip install motorbridge==0.5.6
 python -m pytest tests -v
 ```
 
@@ -108,6 +114,11 @@ python -m pytest tests --offline-kinematics -v
 该模式会跳过所有原生接口与动力学测试。两种模式都不连接电机。
 
 ## 5. 原生源码依据
+
+DM 串口桥扩展及后续时序优化后，Pinocchio 3.9.0 与 4.1.0 的完整回归各 111 项通过。
+包含 DM 的 MIT / POS_VEL 10 cm / 8 s 轨迹、原生重力和反馈故障测试；
+详见 [dm_low_speed_motion_fix.md](dm_low_speed_motion_fix.md)。
+控制周期、重力缓存和日志优化见 [control_timing_optimization.md](control_timing_optimization.md)。
 
 - [官方 3.9 逆运动学实现：Jlog6 与 integrate](https://github.com/stack-of-tasks/pinocchio/blob/v3.9.0/examples/inverse-kinematics.py)
 - [computeAllTerms Python 绑定及实际更新项](https://github.com/stack-of-tasks/pinocchio/blob/v3.9.0/bindings/python/algorithm/expose-cat.cpp)

@@ -17,7 +17,46 @@ end_effector_frame: "end_link"
 arm_control_mode: "posvel"
 
 channel: /dev/ttyACM0
+transport: dm-serial
+baud: 921600
+# Preserve 500 Hz. A COM/tty/cu device may be USB CDC, rather than a real UART.
+# Set uart only for a confirmed physical UART; set usb-cdc for a confirmed CDC bridge.
+serial_link: auto
 rate: 500
+
+motion_control:
+  dm_batch_send: true
+  tx_gap_us: 0
+  max_serial_utilization: 0.75
+  max_velocity: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+  max_acceleration: [1, 1, 1, 1, 1, 1]
+  gravity_scale: [1, 1, 1, 1, 1, 1]
+  feedforward_limit: [18, 18, 18, 6, 6, 6]
+  feedforward_filter_time: 0.02
+  path_samples: 201
+  max_path_joint_step: 0.05
+  path_position_tolerance: 0.00002
+  path_rotation_tolerance: 0.00002
+  allow_retime: true
+  feedback_rate: 50
+  feedback_timeout_ms: 20
+  max_feedback_age: 0.10
+  max_feedback_span: 0.02
+  max_control_dt: 0.05
+  max_tracking_error: 0.15
+  max_start_drift: 0.01
+  settle_joint_tolerance: 0.01
+  settle_duration: 0.20
+  settle_timeout: 2.0
+  log_rate: 50
+  friction:
+    enabled: false
+    coulomb: [0, 0, 0, 0, 0, 0]
+    static: [0, 0, 0, 0, 0, 0]
+    viscous: [0, 0, 0, 0, 0, 0]
+    limit: [1, 1, 1, 0.3, 0.3, 0.3]
+    velocity_scale: 0.002
+    stribeck_velocity: 0.02
 
 groups:
   arm:

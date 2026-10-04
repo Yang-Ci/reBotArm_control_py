@@ -15,9 +15,14 @@ Input: x y z [roll pitch yaw] [duration]  target end-effector pose (meters / rad
 状态 / State: state, end_state
 诊断 / Diagnostics: status, log <csv_path>, stop, clear_fault
 保持姿态向上 / Lift preserving orientation: lift 0.1 8
+静止记录 / Hold log: record
+单关节相对运动 / Joint probe: joint joint2 0.02 2
+显式回零 / Explicit home: home
+退出停止并失能；支撑机械臂，退出不会自动回零。
 """
 
 import sys
+import argparse
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -26,10 +31,23 @@ from reBotArm_control_py.controllers import RebotArmEndPose
 
 
 def main() -> None:
-    rebotarm = RebotArm()
-    ctrl = RebotArmEndPose(rebotarm)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--hw", default=None, help="Hardware YAML (default: config/rebotarm.yaml)")
+    parser.add_argument("--channel", help="PCAN/CAN channel or DM serial port (COM, /dev/tty, /dev/cu)")
+    parser.add_argument("--mode", choices=("mit", "posvel"), help="Override arm control mode")
+    args = parser.parse_args()
+    rebotarm = RebotArm(args.hw, channel=args.channel)
+    ctrl = RebotArmEndPose(rebotarm, arm_control_mode=args.mode)
 
-    ctrl.start()
+    try:
+        ctrl.start()
+        interactive(ctrl, rebotarm)
+    finally:
+        ctrl.end()
+    print("\n完成 / Done.")
+
+
+def interactive(ctrl, rebotarm):
     print("--- 已启动末端位置控制器 ---\n")
     print("--- End-effector pose controller started ---\n")
 
@@ -58,12 +76,10 @@ def main() -> None:
 
         if line.lower() == "end_state":
             try:
-                q = ctrl.get_joint_positions()
+                pos, rpy = ctrl.get_end_pose()
             except RuntimeError as error:
                 print(f"  {error}")
                 continue
-            from reBotArm_control_py.kinematics import joint_to_pose
-            pos, rpy = joint_to_pose(q)
             px, py, pz = float(pos[0]), float(pos[1]), float(pos[2])
             rx, ry, rz = float(rpy[0]), float(rpy[1]), float(rpy[2])
             print(f"  pos=[{px:+.3f} {py:+.3f} {pz:+.3f}] m  rpy=[{rx:+.2f} {ry:+.2f} {rz:+.2f}] rad")
@@ -74,6 +90,27 @@ def main() -> None:
 
         if cmd == "status":
             print(ctrl.motion_status)
+            continue
+        if cmd == "record":
+            try:
+                ctrl.begin_log()
+                print("  已开始保持姿态日志，稍后用 log <file.csv> 导出")
+            except RuntimeError as error:
+                print(f"  {error}")
+            continue
+        if cmd == "joint":
+            try:
+                if len(parts) != 4:
+                    raise ValueError("joint <joint_name> <delta_rad> <duration_s>")
+                print(f"  joint -> {ctrl.move_joint_relative(parts[1], float(parts[2]), float(parts[3]))}")
+            except (ValueError, RuntimeError) as error:
+                print(f"  {error}")
+            continue
+        if cmd == "home":
+            try:
+                ctrl.safe_home()
+            except (ValueError, RuntimeError, TimeoutError) as error:
+                print(f"  {error}")
             continue
         if cmd == "log" and len(parts) == 2:
             print(f"  log -> {ctrl.export_motion_log(parts[1])}")
@@ -130,8 +167,6 @@ def main() -> None:
         print(f"  -> ({x:+.3f}, {y:+.3f}, {z:+.3f})  "
               f"T={duration:.1f}{'ok' if ok else 'failed'}")
 
-    ctrl.end()
-    print("\n完成 / Done.")
 
 
 if __name__ == "__main__":

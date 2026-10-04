@@ -99,6 +99,8 @@ class JointPathReference:
         self.duration = max(float(duration), required * (1.0 + 1e-9))
         self.profile = profile
         self._coeff = c
+        self._derivative_coeff = np.arange(1, 6)[None, :, None] * c[:, 1:]
+        self._second_derivative_coeff = np.arange(1, 5)[None, :, None] * self._derivative_coeff[:, 1:]
         self._h = h
         self._start = q[0].copy()
         self._end = q[-1].copy()
@@ -112,8 +114,8 @@ class JointPathReference:
         index = min(int(u / self._h), len(self._coeff) - 1)
         w = (u - index * self._h) / self._h
         c = self._coeff[index]
-        dc = np.arange(1, 6)[:, None] * c[1:]
-        ddc = np.arange(1, 5)[:, None] * dc[1:]
+        dc = self._derivative_coeff[index]
+        ddc = self._second_derivative_coeff[index]
         return (np.polynomial.polynomial.polyval(w, c),
                 np.polynomial.polynomial.polyval(w, dc) / self._h,
                 np.polynomial.polynomial.polyval(w, ddc) / self._h ** 2)

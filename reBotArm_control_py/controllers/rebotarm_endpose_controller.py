@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import threading
 import time
 from collections import deque
@@ -51,7 +52,7 @@ class RebotArmEndPose:
         self._profile = profile
         self._dt = dt
         self._n = self._arm_group.num_joints
-        self._use_gravity_ff = use_gravity_ff
+        self._use_gravity_ff = bool(use_gravity_ff and self._arm_control_mode == "mit")
         import yaml
         hardware = yaml.safe_load(rebotarm.hardware_config_path.read_text(encoding="utf-8"))
         urdf = Path(hardware["urdf_path"])
@@ -69,7 +70,6 @@ class RebotArmEndPose:
         # Each writer owns a distinct Pinocchio Data object.
         self._ik_data = self._model.createData()
         self._gravity_data = self._model.createData()
-        self._log_data = self._model.createData()
         cfg = dict(rebotarm.motion_control)
         self._max_velocity = joint_vector(cfg.get("max_velocity", 0.5), self._n,
                                           "max_velocity", positive=True)
@@ -90,17 +90,23 @@ class RebotArmEndPose:
         self._path_tolerance = self._positive(cfg, "path_position_tolerance", 2e-5)
         self._rotation_tolerance = self._positive(cfg, "path_rotation_tolerance", 2e-5)
         self._max_feedback_age = self._positive(cfg, "max_feedback_age", 0.25)
+        self._max_feedback_span = self._positive(cfg, "max_feedback_span", 0.02)
         self._max_control_dt = self._positive(cfg, "max_control_dt", 0.05)
         self._max_tracking_error = self._positive(cfg, "max_tracking_error", 0.15)
         self._max_start_drift = self._positive(cfg, "max_start_drift", 0.01)
         self._ff_filter_time = self._positive(cfg, "feedforward_filter_time", 0.02)
         self._allow_retime = bool(cfg.get("allow_retime", True))
+        self._settle_tolerance = self._positive(cfg, "settle_joint_tolerance", 0.01)
+        self._settle_duration = self._positive(cfg, "settle_duration", 0.2)
+        self._settle_timeout = self._positive(cfg, "settle_timeout", 2.0)
         self._log_period = 1.0 / self._positive(cfg, "log_rate", 50.0)
         self._feedback = PositionFeedback(
             self._arm_group, self._positive(cfg, "feedback_rate", 25.0),
             int(cfg.get("feedback_timeout_ms", 20)))
         friction = cfg.get("friction", {}) or {}
         self._friction_enabled = bool(friction.get("enabled", False))
+        if self._friction_enabled and self._arm_control_mode != "mit":
+            raise ValueError("Friction torque feedforward requires MIT mode")
         self._coulomb = joint_vector(friction.get("coulomb", 0.0), self._n, "friction.coulomb")
         self._static_friction = joint_vector(friction.get("static", self._coulomb), self._n,
                                              "friction.static")
@@ -120,12 +126,18 @@ class RebotArmEndPose:
         self._reference = None
         self._motion_started_at = None
         self._moving = False
+        self._settling = False
+        self._goal_reached = False
+        self._settle_started_at = None
+        self._within_tolerance_at = None
         self._running = False
         self._fault = None
         self._q_target = np.zeros(self._n)
         self._qd_target = np.zeros(self._n)
         self._gripper_target = 0.0
         self._tau_filtered = None
+        self._gravity_sequence = None
+        self._gravity_cached = np.zeros(self._n)
         self._last_log_at = -np.inf
         self._motion_log = deque(maxlen=10000)
         self._last_plan = {}
@@ -143,19 +155,50 @@ class RebotArmEndPose:
         return data.oMf[self._end_frame_id].copy()
 
     def start(self):
+        """Start control; any failure cleans up partial enable/feedback/connection."""
+        if self._running or self.rebotarm.control_loop_active:
+            raise RuntimeError("Controller is already running")
+        connected_here = not self.rebotarm._connected
+        try:
+            self._start_impl()
+        except BaseException as original:
+            self._running = False
+            cleanup = [self.rebotarm.stop_control_loop, self._feedback.stop,
+                       self.rebotarm.disable_all]
+            if connected_here:
+                cleanup.append(self.rebotarm.disconnect)
+            for action in cleanup:
+                try:
+                    action()
+                except Exception as error:
+                    print(f"[start cleanup] {action.__name__}: {error}; original: {original}")
+            raise
+
+    def _start_impl(self):
         if self._running:
             raise RuntimeError("Controller is already running")
+        self.rebotarm.validate_control_transport()
         self.rebotarm.connect()
+        self.rebotarm.require_isolated_feedback()
+        from ..actuator.dm_feedback import check_dm_ranges
+        for group in (self._arm_group, self._gripper_group):
+            if hasattr(group, "_jcfgs") and any(j.vendor == "damiao" for j in group._jcfgs):
+                check_dm_ranges(group)
         # Acquire a real pose before enabling or sending the first target.
         sample = self._feedback.refresh()
         if time.monotonic() - sample.sampled_at > self._max_feedback_age:
             raise RuntimeError("Initial feedback is too old")
+        if (np.any(sample.q < self._model.lowerPositionLimit[:self._n] - 1e-3)
+                or np.any(sample.q > self._model.upperPositionLimit[:self._n] + 1e-3)):
+            raise RuntimeError("Initial joints violate URDF limits; check zero and direction")
         with self._motion_lock:
             self._q_target = sample.q.copy()
             self._qd_target.fill(0)
             self._reference = None
             self._fault = None
+            self._settling = self._goal_reached = False
             self._tau_filtered = None
+            self._gravity_sequence = None
         if self._has_gripper:
             qg, _, _ = self._gripper_group.read_position_sample()
             self._gripper_target = float(qg[0])
@@ -167,42 +210,43 @@ class RebotArmEndPose:
             raise RuntimeError("Gripper mode switch failed")
         # Mode switching can take seconds, so reacquire before enabling.
         self._feedback.start()
-        try:
-            sample = self._fresh_sample()
-            with self._motion_lock:
-                self._q_target = sample.q.copy()
-            if self._use_gravity_ff:
-                self._tau_filtered = np.clip(compute_generalized_gravity(
-                    self._model, pad_q_for_model(self._model, sample.q, self._n),
-                    self._gravity_data)[:self._n] * self._gravity_scale,
-                    -self._ff_limit, self._ff_limit)
-            else:
-                self._tau_filtered = np.zeros(self._n)
-            if self._arm_control_mode == "mit":
-                self._arm_group.send_mit(sample.q, vel=np.zeros(self._n),
-                                         tau=self._tau_filtered, strict=True)
-            else:
-                self._arm_group.send_pos_vel(sample.q, vlim=self._max_velocity, strict=True)
-            if self._has_gripper:
-                self._gripper_group.send_mit(np.array([self._gripper_target]), strict=True)
-            self.rebotarm.enable_all(strict=True)
-            self._running = True
-            self.rebotarm.start_control_loop(self._loop_cb)
-        except Exception:
-            self._running = False
-            self._feedback.stop()
-            raise
+        sample = self._fresh_sample()
+        with self._motion_lock:
+            self._q_target = sample.q.copy()
+        if self._has_gripper:
+            qg, _, _ = self._gripper_group.read_position_sample()
+            self._gripper_target = float(qg[0])
+        if self._use_gravity_ff:
+            self._tau_filtered = np.clip(self._gravity_torque(sample),
+                -self._ff_limit, self._ff_limit)
+        else:
+            self._tau_filtered = np.zeros(self._n)
+        if self._arm_control_mode == "mit":
+            self._arm_group.send_mit(sample.q, vel=np.zeros(self._n),
+                                     tau=self._tau_filtered, strict=True)
+        else:
+            self._arm_group.send_pos_vel(sample.q, vlim=self._max_velocity, strict=True)
+        if self._has_gripper:
+            self._gripper_group.send_mit(np.array([self._gripper_target]), strict=True)
+        self.rebotarm.enable_all(strict=True)
+        self._running = True
+        self.rebotarm.start_control_loop(self._loop_cb)
 
-    def end(self):
+    def end(self, *, home=False):
         if not self._running:
             return
         try:
-            self.safe_home()
+            if home:
+                self.safe_home()
+            else:
+                self.stop_motion()
         finally:
-            self.rebotarm.stop_control_loop()
-            self._feedback.stop()
-            self.rebotarm.disconnect()
-            self._running = False
+            try:
+                self.rebotarm.stop_control_loop()
+                self._feedback.stop()
+            finally:
+                self.rebotarm.disconnect()
+                self._running = False
 
     def __enter__(self):
         return self
@@ -223,17 +267,40 @@ class RebotArmEndPose:
             self._gripper_group._mit_kd.fill(0)
 
     def close_gripper(self):
+        if self._has_gripper:
+            self._gripper_group._mit_kp = np.array([j.kp for j in self._gripper_group._jcfgs])
+            self._gripper_group._mit_kd = np.array([j.kd for j in self._gripper_group._jcfgs])
         self.set_gripper_target(0.0)
 
     def _fresh_sample(self):
+        if self._feedback.fatal_error:
+            raise RuntimeError(self._feedback.fatal_error)
         sample = self._feedback.latest()
         if time.monotonic() - sample.sampled_at > self._max_feedback_age:
             raise RuntimeError("Position feedback expired")
+        if sample.read_span > self._max_feedback_span:
+            raise RuntimeError("Position feedback joint sampling span exceeded limit")
         return sample
 
     def get_joint_positions(self):
         """Return the same fresh arm position sample used by the controller."""
         return self._fresh_sample().q
+
+    def get_end_pose(self):
+        with self._plan_lock:
+            pose = self._pose(self._fresh_sample().q, self._ik_data)
+            return pose.translation.copy(), pin.rpy.matrixToRpy(pose.rotation).copy()
+
+    def begin_log(self):
+        """Begin a stationary baseline log; movements start their own log."""
+        with self._motion_lock:
+            if self._moving:
+                raise RuntimeError("Export the current motion log before recording a baseline")
+            self._motion_log.clear()
+            self._last_log_at = -np.inf
+            self._motion_started_at = None
+            self._goal_reached = False
+            self._last_plan = {"kind": "hold"}
 
     def _can_plan(self):
         with self._motion_lock:
@@ -266,6 +333,8 @@ class RebotArmEndPose:
             self._q_target = q_start.copy()
             self._qd_target.fill(0)
             self._moving = True
+            self._settling = self._goal_reached = False
+            self._settle_started_at = self._within_tolerance_at = None
             self._motion_log.clear()
             self._last_log_at = -np.inf
             self._last_plan = dict(details, requested_duration=reference.requested_duration,
@@ -372,12 +441,31 @@ class RebotArmEndPose:
             rpy = pin.rpy.matrixToRpy(pose.rotation)
             return self.move_to_traj(*p, *rpy, duration=duration)
 
+    def move_joint_relative(self, name, delta, duration=2.0):
+        """A bounded joint-space reference for one-axis hardware diagnostics."""
+        with self._plan_lock:
+            if not self._can_plan():
+                return False
+            try:
+                if name not in self._arm_group.joint_names or not np.isfinite(delta):
+                    raise ValueError("Supply an arm joint name and a finite delta in radians")
+                q_start = self._fresh_sample().q
+                target = q_start.copy()
+                target[self._arm_group.joint_names.index(name)] += delta
+                self._install(self._build_reference([q_start, target], duration), q_start,
+                              {"kind": "joint_probe", "joint": name, "delta": float(delta)})
+                return True
+            except (ValueError, RuntimeError) as error:
+                print(f"[motion] {error}")
+                return False
+
     def stop_motion(self):
         with self._plan_lock:
             sample = self._feedback.latest()
             with self._motion_lock:
                 self._reference = None
                 self._moving = False
+                self._settling = self._goal_reached = False
                 self._q_target = sample.q.copy()
                 self._qd_target.fill(0)
 
@@ -387,6 +475,7 @@ class RebotArmEndPose:
             self._fault = self._fault or reason
             self._reference = None
             self._moving = False
+            self._settling = self._goal_reached = False
             self._q_target = measured_q.copy()
             self._qd_target.fill(0)
         if first:
@@ -404,6 +493,17 @@ class RebotArmEndPose:
             self._q_target = sample.q.copy()
             self._qd_target.fill(0)
             self._tau_filtered = None
+            self._gravity_sequence = None
+
+    def _gravity_torque(self, sample):
+        # The published q is unchanged between feedback batches. Filtering and
+        # friction still run every servo cycle; only g(q) is cached.
+        if self._gravity_sequence != sample.sequence:
+            self._gravity_cached = compute_generalized_gravity(
+                self._model, pad_q_for_model(self._model, sample.q, self._n),
+                self._gravity_data)[:self._n] * self._gravity_scale
+            self._gravity_sequence = sample.sequence
+        return self._gravity_cached
 
     def _friction_torque(self, velocity):
         if not self._friction_enabled:
@@ -441,13 +541,17 @@ class RebotArmEndPose:
         now = time.monotonic()
         sample = self._feedback.latest()
         age = now - sample.sampled_at
-        if age > self._max_feedback_age:
+        if self._feedback.fatal_error:
+            self._set_fault(self._feedback.fatal_error, sample.q)
+        elif age > self._max_feedback_age:
             self._set_fault(f"Position feedback expired ({age:.3f}s)", sample.q)
+        elif sample.read_span > self._max_feedback_span:
+            self._set_fault(f"Joint feedback sampling span too large ({sample.read_span:.3f}s)", sample.q)
         elif not np.isfinite(dt) or dt <= 0 or dt > self._max_control_dt:
             self._set_fault(f"Control interval out of range ({dt:.4f}s)", sample.q)
         with self._motion_lock:
             reference = self._reference
-            elapsed = 0.0
+            elapsed = (0.0 if self._motion_started_at is None else now - self._motion_started_at)
             acceleration = np.zeros(self._n)
             if reference is not None:
                 if self._motion_started_at is None:
@@ -457,20 +561,35 @@ class RebotArmEndPose:
                 self._q_target, self._qd_target = state.q, state.qd
                 acceleration = state.qdd
                 if elapsed >= reference.duration:
-                    self._reference = None
-                    self._moving = False
+                    self._settling = True
+                    if self._settle_started_at is None:
+                        self._settle_started_at = now
             q, velocity = self._q_target.copy(), self._qd_target.copy()
             gripper = self._gripper_target
             moving = self._moving
-        if moving and np.max(np.abs(q - sample.q)) > self._max_tracking_error:
+        if not self._fault and np.max(np.abs(q - sample.q)) > self._max_tracking_error:
             self._set_fault("Joint tracking error exceeded limit", sample.q)
             q, velocity = sample.q.copy(), np.zeros(self._n)
             acceleration.fill(0)
+        if self._settling and not self._fault:
+            # Require fresh feedback after the reference ends; repeated stale cache
+            # snapshots cannot prove the arm settled at its final command.
+            settled = (sample.sampled_at >= self._settle_started_at
+                       and np.max(np.abs(q - sample.q)) <= self._settle_tolerance)
+            if not settled:
+                self._within_tolerance_at = None
+            elif self._within_tolerance_at is None:
+                self._within_tolerance_at = sample.sampled_at
+            elif sample.sampled_at - self._within_tolerance_at >= self._settle_duration:
+                self._reference = None
+                self._moving = self._settling = False
+                self._goal_reached = True
+            if self._settling and now - self._settle_started_at > self._settle_timeout:
+                self._set_fault("Goal settling timed out", sample.q)
+                q, velocity = sample.q.copy(), np.zeros(self._n)
         tau = np.zeros(self._n)
         if self._use_gravity_ff:
-            tau = compute_generalized_gravity(
-                self._model, pad_q_for_model(self._model, sample.q, self._n),
-                self._gravity_data)[:self._n] * self._gravity_scale
+            tau = self._gravity_torque(sample).copy()
         tau += self._friction_torque(velocity)
         tau = np.clip(tau, -self._ff_limit, self._ff_limit)
         if not np.all(np.isfinite(tau)):
@@ -480,7 +599,8 @@ class RebotArmEndPose:
         if self._tau_filtered is None:
             self._tau_filtered = tau.copy()
         else:
-            blend = -np.expm1(-max(0.0, dt) / self._ff_filter_time)
+            filter_dt = dt if np.isfinite(dt) and dt > 0 else 1.0 / self.rebotarm.rate
+            blend = -np.expm1(-filter_dt / self._ff_filter_time)
             self._tau_filtered += blend * (tau - self._tau_filtered)
         from motorbridge import CallError
         try:
@@ -499,35 +619,70 @@ class RebotArmEndPose:
             else:
                 self._arm_group.send_pos_vel(sample.q, vlim=self._max_velocity)
         if now - self._last_log_at >= self._log_period:
-            z_ref = float(self._pose(q, self._log_data).translation[2])
-            z_actual = float(self._pose(sample.q, self._log_data).translation[2])
             with self._motion_lock:
-                self._motion_log.append((now, elapsed, dt, age, z_ref, z_actual,
+                # Store the exact cycle snapshot. FK is computed during export,
+                # with separate Data, outside the motor/control critical path.
+                self._motion_log.append((now, elapsed, dt, age,
                     *q, *velocity, *acceleration, *sample.q, *self._tau_filtered,
-                    self._arm_group.send_error_count, self._fault or ""))
+                    self._arm_group.send_error_count, self._fault or "",
+                    sample.sequence, sample.read_span, sample.read_duration,
+                    "fault" if self._fault else "settling" if self._settling
+                    else "tracking" if self._moving else "complete" if self._goal_reached else "hold"))
             self._last_log_at = now
 
     @property
     def motion_status(self):
+        loop_status = self.rebotarm.control_loop_snapshot()
         with self._motion_lock:
-            return dict(self._last_plan, moving=self._moving, fault=self._fault,
-                        feedback_source=self._feedback.latest().source,
-                        feedback_errors=self._feedback.error_count,
-                        feedback_last_error=self._feedback.last_error,
-                        control_loop=dict(self.rebotarm.control_loop_stats))
+            return self._status_locked(loop_status)
+
+    def _status_locked(self, loop_status):
+        sample = self._feedback.latest()
+        return dict(self._last_plan, moving=self._moving, fault=self._fault,
+                    arm_control_mode=self._arm_control_mode,
+                    gravity_feedforward=self._use_gravity_ff,
+                    friction_feedforward=self._friction_enabled,
+                    transport=self.rebotarm.transport,
+                    serial_budget=self.rebotarm.serial_budget(),
+                    dm_receive_rate_hz=dict(self._arm_group.dm_receive_rate_hz),
+                    limits=dict(max_feedback_age=self._max_feedback_age,
+                                max_feedback_span=self._max_feedback_span,
+                                max_control_dt=self._max_control_dt),
+                    settling=self._settling, goal_reached=self._goal_reached,
+                    feedback_source=sample.source,
+                    feedback_age=time.monotonic() - sample.sampled_at,
+                    feedback_read_span=sample.read_span,
+                    feedback_read_duration=sample.read_duration,
+                    feedback_errors=self._feedback.error_count,
+                    feedback_last_error=self._feedback.last_error,
+                    control_loop=loop_status)
+
+    def _render_motion_rows(self, rows):
+        data = self._model.createData()
+        for row in rows:
+            q = np.asarray(row[4:4 + self._n])
+            measured = np.asarray(row[4 + 3 * self._n:4 + 4 * self._n])
+            z_ref = float(self._pose(q, data).translation[2])
+            z_actual = float(self._pose(measured, data).translation[2])
+            yield (*row[:4], z_ref, z_actual, *row[4:])
 
     def export_motion_log(self, path):
         path = Path(path).resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
         columns = ["monotonic_time", "trajectory_time", "control_dt", "feedback_age", "z_ref", "z_actual"]
         for prefix in ("q_ref", "qd_ref", "qdd_ref", "q_actual", "tau_ff"):
             columns.extend(f"{prefix}_{name}" for name in self._arm_group.joint_names)
         columns.extend(("send_errors", "fault"))
+        columns.extend(("feedback_sequence", "feedback_read_span", "feedback_read_duration", "phase"))
+        loop_status = self.rebotarm.control_loop_snapshot()
         with self._motion_lock:
             rows = list(self._motion_log)
+            status = self._status_locked(loop_status)
         with path.open("w", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
             writer.writerow(columns)
-            writer.writerows(rows)
+            writer.writerows(self._render_motion_rows(rows))
+        path.with_suffix(".status.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
         return path
 
     def safe_home(self, max_vel=0.5, send_freq=50.0, settle_thresh=0.01, timeout=15.0):
